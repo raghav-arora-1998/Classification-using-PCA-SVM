@@ -1,0 +1,170 @@
+---
+title: "PCA"
+author: 'Raghav Arora '
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(message = FALSE, warning = FALSE)
+
+library(tidyverse)
+library(tidymodels)
+library(kknn)
+library(tune)
+library(kernlab)
+
+set.seed(98249)
+```
+
+## Data Prep
+
+```{r, echo = FALSE}
+# Read data
+fed <- read.csv("https://www.dropbox.com/s/9t8sxr1sg0monih/federalist.txt?dl=1")
+
+# Data from papers with known authors
+fed_known <- fed %>%
+  select(-1) %>%
+  filter(Author != "DIS")
+```
+
+```{r}
+fed_matrix <- fed_known %>% select(-Author) %>% as.matrix()
+pc <- prcomp(fed_matrix, center = TRUE, scale = TRUE)
+
+```
+
+```{r}
+pcs_df <- pc$rotation %>%
+  as.data.frame() %>%
+  rownames_to_column() 
+pcs_df %>%
+  arrange(desc(abs(PC1)))
+```
+
+```{r}
+pc$sdev
+```
+
+```{r}
+cumul_vars <- cumsum(pc$sdev^2)/sum(pc$sdev^2)
+cumul_vars
+```
+
+```{r}
+plot(cumul_vars)
+```
+
+#### Fit a KNN classifier using step_pca.  How does the accuracy compare to when you use all the original predictors?
+
+```{r}
+recipe_pca <- recipe(Author ~ . , data = fed_known) %>% 
+  step_normalize(all_numeric()) %>% 
+  step_pca(all_numeric(), threshold = 0.95)
+
+recipe <- recipe_pca <- recipe(Author ~ . , data = fed_known) %>% 
+  step_normalize(all_numeric())
+```
+
+```{r}
+knn1 <- nearest_neighbor(neighbors = 10) %>% 
+  set_engine("kknn") %>% 
+  set_mode("classification")
+```
+
+```{r}
+# Without PCA
+
+knn_wflow <- workflow() %>% 
+  add_model(knn1) %>% 
+  add_recipe(recipe)
+
+fed_cv <- vfold_cv(fed_known, v = 10)
+
+knn_fit <- knn_wflow %>% 
+  fit_resamples(fed_cv)
+
+knn_fit %>% collect_metrics()
+```
+
+```{r}
+# With PCA
+
+knn_wflow <- workflow() %>% 
+  add_model(knn1) %>% 
+  add_recipe(recipe_pca)
+
+fed_cv <- vfold_cv(fed_known, v = 10)
+
+knn_fit <- knn_wflow %>% 
+  fit_resamples(fed_cv)
+
+knn_fit %>% collect_metrics()
+```
+Accuracy of model without PCA is better than with PCA.
+
+## Try it!
+
+#### Fit a support vector classifier, tuning the **cost** parameter
+
+```{r}
+tuning_spec <- svm_poly(cost = tune(), degree = 1) %>%
+  set_mode("classification") %>%
+  set_engine("kernlab")
+
+svm_grid <- expand.grid(cost = c(0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2))
+
+svm_wflow <- workflow() %>%
+  add_model(tuning_spec) %>%
+  add_recipe(recipe_pca)
+
+svm_results <-  svm_wflow %>% 
+  tune_grid(resamples = fed_cv,
+            grid = svm_grid)
+
+svm_results %>% 
+  collect_metrics() %>%
+  arrange(desc(mean))
+
+```
+
+Cost = 0.25
+
+#### Fit a support vector **machine**, tuning the **cost** parameter AND the **degree** parameter.
+
+```{r}
+tuning_spec <- svm_poly(cost = 0.25, degree = tune()) %>%
+  set_mode("classification") %>%
+  set_engine("kernlab")
+
+svm_grid2 <- expand.grid(degree = c(1,2,3,4,5))
+
+svm_wflow <- workflow() %>%
+  add_model(tuning_spec) %>%
+  add_recipe(recipe_pca)
+
+svm_results2 <-  svm_wflow %>% 
+  tune_grid(resamples = fed_cv,
+            grid = svm_grid2)
+
+svm_results2 %>% 
+  collect_metrics() %>%
+  arrange(desc(mean))
+```
+
+Degree = 1
+
+```{r}
+svm_spec <- svm_poly(cost = 0.25, degree = 1) %>%
+  set_mode("classification") %>%
+  set_engine("kernlab")
+
+fed_wflow <- workflow() %>%
+  add_model(svm_spec) %>%
+  add_recipe(recipe_pca)
+
+my_svm <- fed_wflow %>%
+  fit_resamples(fed_cv)
+
+my_svm %>% collect_metrics()
+```
+
